@@ -1,239 +1,75 @@
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, roc_auc_score
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-import pandas as pd
-from google.colab import files
-import seaborn as sns
-import matplotlib.pyplot as plt
-import numpy as np
-from xgboost import XGBClassifier
-import joblib
-import shap
-from tabulate import tabulate
-
-# Dictionary to store uploaded files
-uploaded_files = {}
-
-# Prompt for and upload multiple files
-num_files = int(input("How many files do you want to upload? "))
-
-for i in range(num_files):
-    print(f"Upload file {i+1}:")
-    uploaded = files.upload()
-    filename = next(iter(uploaded))  # Get the filename
-    uploaded_files[filename] = uploaded[filename]  # Store file data
-
-# Ensure at least two files are uploaded
-if len(uploaded_files) < 2:
-    raise ValueError("Error: At least two files are required.")
-
-# Get dataset and new patient data filenames
-dataset_filename, new_patient_filename = list(uploaded_files.keys())[:2]
-
-# Read the dataset and new patient data files
-dataset = pd.read_excel(dataset_filename)
-new_patient_data = pd.read_excel(new_patient_filename)
-
-print("Dataset and new patient data loaded successfully.")
-
-# Display dataset information
-print(dataset.head(10))
-print(dataset.info())
-
-# Calculate min, max, median, and 25th-75th percentiles
-summary = dataset.describe(percentiles=[0.25, 0.5, 0.75]).loc[['min', '25%', '50%', '75%', 'max']]
-summary = summary.rename(index={
-    'min': 'Minimum',
-    '50%': 'Median',
-    '25%': '25th Percentile',
-    '75%': '75th Percentile',
-    'max': 'Maximum'
-})
-
-# Save summary statistics to Excel
-summary_filename = 'summary_statistics.xlsx'
-summary.to_excel(summary_filename, sheet_name='Summary')
-print(f"Summary statistics saved to {summary_filename}")
-
-# Display the summary as a table
-print(tabulate(summary, headers='keys', tablefmt='grid'))
-
-# Correlation Matrix Plot
-plt.figure(figsize=(25, 14))
-sns.heatmap(dataset.corr(), annot=True, fmt=".2f", cmap='coolwarm', square=True)
-plt.title("Feature Correlation Matrix")
-plt.show()
-
-# Select features and target variable
-features = [
-    "BA%", "EO#", "EO%", "HCT", "HGB", "IG%", "LY#", "LY%", "MCH", "MCHC", "MCV", "MO#", "MO%", "MPV",
-    "NE#", "NE%", "PDW", "P-LCR", "PLT", "RBC", "RDW-CV", "RDW-SD", "WBC", "Creatinine", "CRP", "NE#/LY#", "ScrxCRP", "NE#xCRP", "P-LCRxCRP"
-]
-target = "Procalcitonin"
-
-# Handle missing values
-data = dataset.fillna(dataset.median(skipna=True))
-
-# Create a binary target variable for procalcitonin ≥ 0.5
-data['Procalcitonin_Binary'] = (data[target] >= 0.5).astype(int)
-
-# Split data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(data[features], data['Procalcitonin_Binary'], test_size=0.2, random_state=42)
-
-# Compute class weight ratio
-class_weight_ratio = len(y_train[y_train == 0]) / len(y_train[y_train == 1])
-
-# Define hyperparameter grid for RandomizedSearchCV
-param_dist = {
-    'n_estimators': [50, 100, 200, 300, 400, 500],
-    'max_depth': [3, 4, 5, 6, 7, 9],
-    'learning_rate': [0.01, 0.05, 0.1, 0.2, 0.3],
-    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'reg_alpha': [0, 0.1, 0.5],
-    'reg_lambda': [1, 1.5, 2],
-    'scale_pos_weight': [1, len(y_train[y_train == 0]) / len(y_train[y_train == 1])]
-}
-
-
-# Initialize and perform RandomizedSearchCV
-model = XGBClassifier(random_state=42)
-random_search = RandomizedSearchCV(model, param_distributions=param_dist, n_iter=50, scoring='accuracy', cv=10, random_state=42, n_jobs=-1)
-random_search.fit(X_train, y_train)
-
-# Retrieve best parameters and best estimator
-best_params = random_search.best_params_
-print("Best Parameters:", best_params)
-best_model = random_search.best_estimator_
-
-# Get cross-validation results and display top results
-cv_results_df = pd.DataFrame(random_search.cv_results_)
-top_results = cv_results_df.sort_values(by='mean_test_score', ascending=False)
-print(top_results[['params', 'mean_test_score', 'std_test_score']].head())
-
-# Feature Importance Plot
-feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': best_model.feature_importances_})
-feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
-
-# Plot
-plt.figure(figsize=(10, 6))
-sns.barplot(x=feature_importance_df['Importance'], y=feature_importance_df['Feature'], palette="viridis")
-plt.xlabel("Importance Score")
-plt.ylabel("Feature")
-plt.title("Feature Importances For Random Forest")
-plt.show()
-
-# Make predictions
-predictions = best_model.predict(X_test)
-prediction_probs = best_model.predict_proba(X_test)[:, 1]
-
-# Evaluate model
-accuracy = accuracy_score(y_test, predictions)
-conf_matrix = confusion_matrix(y_test, predictions)
-class_report = classification_report(y_test, predictions, output_dict=True)
-
-# Convert classification report to a tabular format
-class_report_list = [
-    ['accuracy', class_report['accuracy'], '', '', '']
-] + [
-    [key, value['precision'], value['recall'], value['f1-score'], value['support']]
-    for key, value in class_report.items() if key != 'accuracy'
-]
-
-print("Classification Report:")
-print(tabulate(class_report_list, headers=["Class", "Precision", "Recall", "F1-Score", "Support"], tablefmt="grid"))
-
-# Calculate Positive Predictive Value (PPV) and Negative Predictive Value (NPV)
-tn, fp, fn, tp = conf_matrix.ravel()
-ppv = tp / (tp + fp) if (tp + fp) != 0 else 0
-npv = tn / (tn + fn) if (tn + fn) != 0 else 0
-
-print(f'Positive Predictive Value (PPV): {ppv:.2f}')
-print(f'Negative Predictive Value (NPV): {npv:.2f}')
-
-# Visualize confusion matrix
-plt.figure(figsize=(8, 6))
-plt.imshow(conf_matrix, cmap='Blues', interpolation='nearest')
-plt.title("Confusion Matrix")
-plt.colorbar()
-
-# Add text annotations for TP, TN, FP, FN
-for i in range(conf_matrix.shape[0]):
-    for j in range(conf_matrix.shape[1]):
-        plt.text(j, i, conf_matrix[i, j], ha='center', va='center', color='red', fontsize=16)
-
-# Add labels for the axes
-tick_marks = np.arange(2)
-plt.xticks(tick_marks, ['< 0.5', '≥ 0.5'])
-plt.yticks(tick_marks, ['< 0.5', '≥ 0.5'])
-plt.ylabel('True label')
-plt.xlabel('Predicted label')
-plt.show()
-
-# ROC Curve and AUC
-fpr, tpr, thresholds = roc_curve(y_test, prediction_probs)
-roc_auc = roc_auc_score(y_test, prediction_probs)
-
-plt.figure(figsize=(8, 6))
-plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
-plt.plot([0, 1], [0, 1], color='grey', lw=2, linestyle='--')
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic (ROC) Curve')
-plt.legend(loc="lower right")
-plt.show()
-
-# Calculate sensitivity and specificity
-sensitivity = tpr
-specificity = 1 - fpr
-
-# Print AUC, sensitivity, and specificity
-print(f'AUC: {roc_auc:.2f}')
-print(f'Sensitivity: {sensitivity}')
-print(f'Specificity: {specificity}')
-
-# Feature Importance Plot
-feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': best_model.feature_importances_})
-feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
-
-plt.figure(figsize=(10, 6))
-sns.barplot(x=feature_importance_df['Importance'], y=feature_importance_df['Feature'], palette="viridis")
-plt.xlabel("Importance Score")
-plt.ylabel("Feature")
-plt.title("Feature Importances For Random Forest")
-plt.show()
-
-# SHAP Explanation
-explainer = shap.Explainer(best_model, X_test) # Pass the fitted 'best_model'
-shap_values = explainer(X_test)
-
-# SHAP Summary Plot
-shap.summary_plot(shap_values, X_test, feature_names=features)
-
-# SHAP Beeswarm Plot
-shap.plots.beeswarm(shap_values)
-
-# Automated SHAP Dependence Plots for the Top 20 Most Important Features
-top_features = feature_importance_df["Feature"].head(20).tolist()
-
-for feature in top_features:
-    shap.dependence_plot(feature, shap_values.values, X_test, feature_names=features)
-    plt.show()
-
-# Make predictions for new patients
-new_patient_data_array = new_patient_data[features].to_numpy()
-# Use the trained model (best_model) instead of the untrained model (model)
-predicted_procalcitonin_binary = best_model.predict(new_patient_data_array)  
-print("Predicted procalcitonin binary for new patients:")
-print(predicted_procalcitonin_binary)
-    
-# Save the predictions to an Excel file
-output_file_path = 'new_patient_predictions.xlsx'
-new_patient_data['Predicted_Procalcitonin_Binary'] = predicted_procalcitonin_binary
-new_patient_data.to_excel(output_file_path, index=False)
-print(f"Predictions saved to {output_file_path}")
-
-# Step 8: Download Results
-files.download('new_patient_predictions.xlsx')
+# PCT-PREDICTION
+This repository contains a machine learning-based Clinical Decision Support  model designed to predict whether procalcitonin (PCT) levels exceed 0.5 ng/mL using commonly available laboratory tests.
+This repository contains a machine learning-based Clinical Decision Support (CDS) system designed to predict whether procalcitonin (PCT) levels exceed 0.5 ng/mL using commonly available laboratory tests. The model utilizes complete blood count (CBC) parameters, C-reactive protein (CRP), and creatinine (Cr) levels to provide a binary prediction of PCT levels, enabling clinicians to optimize testing and antibiotic stewardship.
+# Procalcitonin Prediction using XGBoost (Google Colab)
+This project focuses on predicting **Procalcitonin (PCT) levels** using the **XGBoost** machine learning model. Procalcitonin is a biomarker used to diagnose bacterial infections and sepsis. The model predicts whether the Procalcitonin level is **≥ 0.5** (binary classification) based on various laboratory test results.
+The code is designed to run in **Google Colab**, making it easy to use without requiring local setup.
+## Table of Contents
+1. [Project Overview](#project-overview)
+2. [Features](#features)
+3. [Google Colab Setup](#google-colab-setup)
+4. [Usage](#usage)
+5. [File Descriptions](#file-descriptions)
+6. [Outputs](#outputs)
+7. [License](#license)
+---
+## Project Overview
+The goal of this project is to build a machine learning model that predicts whether a patient's Procalcitonin level is **≥ 0.5** based on a set of laboratory test results. The model is trained using the **XGBoost** algorithm, and hyperparameter tuning is performed using **RandomizedSearchCV**. The project includes:
+- Data preprocessing and feature selection.
+- Hyperparameter tuning for the XGBoost model.
+- Model evaluation using accuracy, confusion matrix, ROC-AUC, and classification report.
+- SHAP (SHapley Additive exPlanations) for model interpretability.
+- Prediction on new patient data.
+---
+## Features
+- **Input Data**: The dataset includes laboratory test results such as WBC, CRP, Creatinine, and more.
+- **Target Variable**: Binary classification of Procalcitonin levels (`< 0.5` or `≥ 0.5`).
+- **Model**: XGBoost with hyperparameter tuning.
+- **Evaluation Metrics**:
+  - Accuracy
+  - Confusion Matrix (TP, TN, FP, FN)
+  - ROC-AUC Curve
+  - Sensitivity and Specificity
+  - Positive Predictive Value (PPV) and Negative Predictive Value (NPV)
+- **Interpretability**: SHAP summary and dependence plots for feature importance.
+---
+## Google Colab Setup
+To run this project in Google Colab, follow these steps:
+1. **Open Google Colab**:
+   - Go to [Google Colab](https://colab.research.google.com/).
+   - Click on `File` → `New Notebook` to create a new Colab notebook.
+2. **Upload the Code**:
+   - Copy the code from the repository and paste it into a Colab notebook cell.
+   - Alternatively, you can upload the `.ipynb` file directly to Colab.
+3. **Upload Dataset and New Patient Data**:
+   - When prompted by the script, upload the following files:
+     - **Train/Test Dataset**: The dataset containing laboratory test results and Procalcitonin levels.
+     - **New Patient Data**: The dataset containing laboratory test results for new patients.
+4.  **Run the Script**:
+   - Execute each cell in the Colab notebook sequentially.
+   - The script will:
+     - Preprocess the data.
+     - Train the XGBoost model with hyperparameter tuning.
+     - Evaluate the model using various metrics.
+     - Generate visualizations (confusion matrix, ROC curve, feature importance, SHAP plots).
+     - Predict Procalcitonin levels for new patients and save the results to an Excel file.
+       
+  5.  **Download the Results**:
+   - After running the script, download the following files:
+     - `new_patient_predictions.xlsx`: Contains predictions for new patients.
+     - `summary_statistics.xlsx`: Contains summary statistics of the dataset.
+---
+## Outputs
+1. **Model Evaluation**:
+   - Accuracy, Confusion Matrix, Classification Report.
+   - ROC-AUC Curve, Sensitivity, Specificity, PPV, NPV.
+2. **Visualizations**:
+   - Confusion Matrix with TP, TN, FP, FN values.
+   - Feature Importance Plot.
+   - SHAP Summary Plot and Dependence Plots.
+3. **Predictions**:
+   - Predictions for new patients saved in `new_patient_predictions.xlsx`.
+4. **Summary Statistics**:
+   - Summary statistics of the dataset saved in `summary_statistics.xlsx`.
+---
 
