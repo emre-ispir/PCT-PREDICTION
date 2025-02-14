@@ -1,3 +1,7 @@
+!pip install scikit-learn==1.2.2
+
+!pip install python-docx
+!pip install shap
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, roc_auc_score
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 import pandas as pd
