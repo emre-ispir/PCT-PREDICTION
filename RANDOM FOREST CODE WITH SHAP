@@ -1,0 +1,251 @@
+!pip install python-docx
+!pip install shap
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, roc_auc_score
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.ensemble import RandomForestClassifier  # Replace XGBoost with Random Forest
+import pandas as pd
+from google.colab import files
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+import joblib
+import shap
+from tabulate import tabulate
+
+# Dictionary to store uploaded files
+uploaded_files = {}
+
+# Prompt for and upload multiple files
+num_files = int(input("How many files do you want to upload? "))
+
+for i in range(num_files):
+    print(f"Upload file {i+1}:")
+    uploaded = files.upload()
+    filename = next(iter(uploaded))  # Get the filename
+    uploaded_files[filename] = uploaded[filename]  # Store file data
+
+# Ensure at least two files are uploaded
+if len(uploaded_files) < 2:
+    raise ValueError("Error: At least two files are required.")
+
+# Get dataset and new patient data filenames
+dataset_filename, new_patient_filename = list(uploaded_files.keys())[:2]
+
+# Read the dataset and new patient data files
+dataset = pd.read_excel(dataset_filename)
+new_patient_data = pd.read_excel(new_patient_filename)
+
+print("Dataset and new patient data loaded successfully.")
+
+# Display dataset information
+print(dataset.head(10))
+print(dataset.info())
+
+# Calculate min, max, median, and 25th-75th percentiles
+summary = dataset.describe(percentiles=[0.25, 0.5, 0.75]).loc[['min', '25%', '50%', '75%', 'max']]
+summary = summary.rename(index={
+    'min': 'Minimum',
+    '50%': 'Median',
+    '25%': '25th Percentile',
+    '75%': '75th Percentile',
+    'max': 'Maximum'
+})
+
+# Save summary statistics to Excel
+summary_filename = 'summary_statistics.xlsx'
+summary.to_excel(summary_filename, sheet_name='Summary')
+print(f"Summary statistics saved to {summary_filename}")
+
+# Display the summary as a table
+print(tabulate(summary, headers='keys', tablefmt='grid'))
+
+# Correlation Matrix Plot
+plt.figure(figsize=(25, 14))
+sns.heatmap(dataset.corr(), annot=True, fmt=".2f", cmap='coolwarm', square=True)
+plt.title("Feature Correlation Matrix")
+plt.show()
+
+# Select features and target variable
+features = [
+    "BA%", "EO#", "EO%", "HCT", "HGB", "IG%", "LY#", "LY%", "MCH", "MCHC", "MCV", "MO#", "MO%", "MPV",
+    "NE#", "NE%", "PDW", "P-LCR", "PLT", "RBC", "RDW-CV", "RDW-SD", "WBC", "Creatinine", "CRP", "NE#/LY#", "ScrxCRP", "NE#xCRP", "P-LCRxCRP"
+]
+target = "Procalcitonin"
+
+# Handle missing values
+data = dataset.fillna(dataset.median(skipna=True))
+
+# Create a binary target variable for procalcitonin ≥ 0.5
+data['Procalcitonin_Binary'] = (data[target] >= 0.5).astype(int)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(data[features], data['Procalcitonin_Binary'], test_size=0.2, random_state=42)
+
+# Define hyperparameter grid for RandomizedSearchCV (Random Forest)
+param_dist = {
+    'n_estimators': [50, 100, 200, 300, 400, 500],  # Number of trees in the forest
+    'max_depth': [None, 10, 20, 30, 40, 50],  # Maximum depth of the tree
+    'min_samples_split': [2, 5, 10],  # Minimum number of samples required to split a node
+    'min_samples_leaf': [1, 2, 4],  # Minimum number of samples required at each leaf node
+    'bootstrap': [True, False],  # Whether to use bootstrap samples
+    'class_weight': [None, 'balanced']  # Weights for imbalanced classes
+}
+
+# Initialize and perform RandomizedSearchCV (Random Forest)
+model = RandomForestClassifier(random_state=42)
+random_search = RandomizedSearchCV(model, param_distributions=param_dist, n_iter=50, scoring='accuracy', cv=10, random_state=42, n_jobs=-1)
+random_search.fit(X_train, y_train)
+
+# Retrieve best parameters and best estimator
+best_params = random_search.best_params_
+print("Best Parameters:", best_params)
+best_model = random_search.best_estimator_
+
+# Get cross-validation results and display top results
+cv_results_df = pd.DataFrame(random_search.cv_results_)
+top_results = cv_results_df.sort_values(by='mean_test_score', ascending=False)
+print(top_results[['params', 'mean_test_score', 'std_test_score']].head())
+
+# Feature Importance Plot
+feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': best_model.feature_importances_})
+feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
+
+# Plot
+plt.figure(figsize=(10, 6))
+sns.barplot(x=feature_importance_df['Importance'], y=feature_importance_df['Feature'], palette="viridis")
+plt.xlabel("Importance Score")
+plt.ylabel("Feature")
+plt.title("Feature Importances For Random Forest")
+plt.show()
+
+# Make predictions
+predictions = best_model.predict(X_test)
+prediction_probs = best_model.predict_proba(X_test)[:, 1]
+
+# Evaluate model
+accuracy = accuracy_score(y_test, predictions)
+conf_matrix = confusion_matrix(y_test, predictions)
+class_report = classification_report(y_test, predictions, output_dict=True)
+
+# Convert classification report to a tabular format
+class_report_list = [
+    ['accuracy', class_report['accuracy'], '', '', '']
+] + [
+    [key, value['precision'], value['recall'], value['f1-score'], value['support']]
+    for key, value in class_report.items() if key != 'accuracy'
+]
+
+print("Classification Report:")
+print(tabulate(class_report_list, headers=["Class", "Precision", "Recall", "F1-Score", "Support"], tablefmt="grid"))
+
+# Calculate Positive Predictive Value (PPV) and Negative Predictive Value (NPV)
+tn, fp, fn, tp = conf_matrix.ravel()
+ppv = tp / (tp + fp) if (tp + fp) != 0 else 0
+npv = tn / (tn + fn) if (tn + fn) != 0 else 0
+
+print(f'Positive Predictive Value (PPV): {ppv:.2f}')
+print(f'Negative Predictive Value (NPV): {npv:.2f}')
+
+# Visualize confusion matrix
+plt.figure(figsize=(8, 6))
+plt.imshow(conf_matrix, cmap='Blues', interpolation='nearest')
+plt.title("Confusion Matrix")
+plt.colorbar()
+
+# Add text annotations for TP, TN, FP, FN
+for i in range(conf_matrix.shape[0]):
+    for j in range(conf_matrix.shape[1]):
+        plt.text(j, i, conf_matrix[i, j], ha='center', va='center', color='red', fontsize=16)
+
+# Add labels for the axes
+tick_marks = np.arange(2)
+plt.xticks(tick_marks, ['< 0.5', '≥ 0.5'])
+plt.yticks(tick_marks, ['< 0.5', '≥ 0.5'])
+plt.ylabel('True label')
+plt.xlabel('Predicted label')
+plt.show()
+
+# ROC Curve and AUC
+fpr, tpr, thresholds = roc_curve(y_test, prediction_probs)
+roc_auc = roc_auc_score(y_test, prediction_probs)
+
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='grey', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend(loc="lower right")
+plt.show()
+
+# Calculate sensitivity and specificity
+sensitivity = tpr
+specificity = 1 - fpr
+
+# Print AUC, sensitivity, and specificity
+print(f'AUC: {roc_auc:.2f}')
+print(f'Sensitivity: {sensitivity}')
+print(f'Specificity: {specificity}')
+
+# Retrieve best parameters and best estimator
+best_params = random_search.best_params_
+print("Best Parameters:", best_params)
+best_model = random_search.best_estimator_
+
+# Compute SHAP values with check_additivity=False
+explainer = shap.Explainer(best_model, X_test)
+shap_values = explainer(X_test, check_additivity=False)
+
+# Compute SHAP values
+explainer = shap.Explainer(best_model, X_test)
+shap_values = explainer(X_test, check_additivity=False)  # SHAP Explanation Object
+
+# ✅ Extract SHAP values for class 1 (PCT ≥ 0.5)
+shap_values_class1 = shap.Explanation(values=shap_values.values[..., 1], 
+                                      base_values=shap_values.base_values[..., 1], 
+                                      data=X_test, 
+                                      feature_names=features)
+
+# ✅ Fixed Beeswarm Plot
+shap.plots.beeswarm(shap_values_class1)
+
+
+# Extract SHAP values for the positive class (class 1: Procalcitonin ≥ 0.5)
+shap_values_array = shap_values.values[..., 1]  # Select positive class probabilities
+shap_df = pd.DataFrame(shap_values_array, columns=features)
+
+# Extract SHAP values for "NE#xCRP" and "ScrxCRP"
+ne_crp_shap = shap_df["NE#xCRP"]
+scr_crp_shap = shap_df["ScrxCRP"]
+
+# Scatter plot for SHAP values comparison
+plt.figure(figsize=(8, 6))
+plt.scatter(ne_crp_shap, scr_crp_shap, alpha=0.6, c=X_test["CRP"], cmap="viridis", edgecolor="k")
+plt.colorbar(label="CRP Levels")
+plt.xlabel("SHAP Value of NE#xCRP")
+plt.ylabel("SHAP Value of ScrxCRP")
+plt.title("Comparison of SHAP Values: NE#xCRP vs. ScrxCRP")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# SHAP Summary Plot
+shap.summary_plot(shap_values_array, X_test, feature_names=features)
+plt.show()
+
+# Make predictions for new patients
+new_patient_data_array = new_patient_data[features].to_numpy()
+predicted_procalcitonin_binary = best_model.predict(new_patient_data_array)  # Use the trained model (best_model)
+print("Predicted procalcitonin binary for new patients:")
+print(predicted_procalcitonin_binary)
+
+# Save the predictions to an Excel file
+output_file_path = 'new_patient_predictions.xlsx'
+new_patient_data['Predicted_Procalcitonin_Binary'] = predicted_procalcitonin_binary
+new_patient_data.to_excel(output_file_path, index=False)
+print(f"Predictions saved to {output_file_path}")
+
+# Download Results
+files.download('new_patient_predictions.xlsx')
