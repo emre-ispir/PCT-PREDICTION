@@ -46,6 +46,11 @@ To run this project in Google Colab, follow these steps:
      - **Train/Test Dataset**: The dataset containing laboratory test results and Procalcitonin levels.
      - **New Patient Data**: The dataset containing laboratory test results for new patients.
 4.  **Run the Script**:
+   -When running the following command in Google Colab:!pip install scikit-learn==1.2.2
+     A runtime restart is required to apply the changes
+     After installation, restart the runtime by clicking:
+     Runtime → Restart Runtime in Google Colab.
+     This ensures that the correct version of scikit-learn is loaded properly.
    - Execute each cell in the Colab notebook sequentially.
    - The script will:
      - Preprocess the data.
