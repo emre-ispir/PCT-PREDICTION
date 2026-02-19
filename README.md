@@ -1,5 +1,10 @@
 PCT-PREDICTION
 
 
-This repository contains the XGBoost and Random Forest machine learning models which are designed to predict whether procalcitonin (PCT) levels exceed 0.5 ng/mL using commonly available laboratory tests. The model utilizes complete blood count (CBC) parameters, C-reactive protein (CRP), and serum creatinine (SCr) levels to provide a binary prediction of PCT levels, enabling clinicians to optimize testing and antibiotic stewardship.
+Overview
+This repository contains the complete machine learning pipeline developed for predicting elevated procalcitonin (PCT ≥ 0.5 ng/mL) from routine complete blood count (CBC) and inflammatory markers. The pipeline supports antimicrobial stewardship programs by enabling safe reduction of unnecessary PCT testing through two operating strategies:
 
+Rule-out strategy — maximizes sensitivity and NPV to safely defer PCT testing
+Balanced strategy — maximizes overall diagnostic performance for routine clinical deployment
+
+The pipeline was developed and internally validated on a development cohort, then externally validated on an independent dataset with locked models and locked thresholds.
